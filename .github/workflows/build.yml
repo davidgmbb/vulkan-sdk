@@ -13,41 +13,76 @@ on:
         description: Git ref for KhronosGroup/Vulkan-Loader
         default: main
         required: true
+      slang_ref:
+        description: Git ref for shader-slang/slang
+        default: master
+        required: true
+      build_slang:
+        description: Include slangc and Slang libraries
+        type: boolean
+        default: true
+        required: true
       enable_wsi:
-        description: Enable XCB, Xlib, Xrandr, and Wayland loader WSI support
+        description: Linux only - enable XCB, Xlib, Xrandr, and Wayland loader WSI support
         type: boolean
         default: true
         required: true
 
 jobs:
   build:
-    name: Build Linux ${{ matrix.arch }} SDK pieces
-    # Build natively per architecture instead of cross-compiling. ubuntu-22.04
-    # keeps a glibc 2.35 baseline while remaining recent-distro compatible.
+    name: ${{ matrix.platform }} ${{ matrix.arch }} SDK
     runs-on: ${{ matrix.runner }}
+
+    defaults:
+      run:
+        shell: bash
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
+          - platform: linux
+            arch: x86_64
             runner: ubuntu-22.04
-            artifact: custom-vulkan-sdk-linux-x86_64-partial
-          - arch: aarch64
+            package_ext: tar.gz
+          - platform: linux
+            arch: aarch64
             runner: ubuntu-22.04-arm
-            artifact: custom-vulkan-sdk-linux-aarch64-partial
+            package_ext: tar.gz
+          - platform: macos
+            arch: x86_64
+            runner: macos-15-intel
+            package_ext: tar.gz
+          - platform: macos
+            arch: aarch64
+            runner: macos-15
+            package_ext: tar.gz
+          - platform: windows
+            arch: x86_64
+            runner: windows-2022
+            package_ext: zip
+          - platform: windows
+            arch: aarch64
+            runner: windows-11-arm
+            package_ext: zip
 
     env:
       VULKAN_HEADERS_REF: ${{ github.event.inputs.vulkan_headers_ref || 'main' }}
       VULKAN_LOADER_REF: ${{ github.event.inputs.vulkan_loader_ref || 'main' }}
+      SLANG_REF: ${{ github.event.inputs.slang_ref || 'master' }}
+      BUILD_SLANG: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.build_slang == 'false') && 'OFF' || 'ON' }}
       ENABLE_WSI: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.enable_wsi == 'false') && 'OFF' || 'ON' }}
+      SLANG_LLVM_FLAVOR: DISABLE
+      SLANG_ENABLE_DXIL: OFF
+      MAX_GLIBC_VERSION: '2.35'
       JOBS: 2
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install Linux build dependencies
+        if: ${{ matrix.platform == 'linux' }}
         run: |
           set -eux
           sudo apt-get update
@@ -68,73 +103,52 @@ jobs:
             libxrandr-dev
           cmake --version
 
-      - name: Build SDK pieces
-        run: scripts/build-sdk.sh ${{ matrix.arch }}
-
-      - name: Verify native architecture output
+      - name: Install macOS build dependencies
+        if: ${{ matrix.platform == 'macos' }}
         run: |
           set -eux
-          file -L dist/custom-vulkan-sdk/linux-${{ matrix.arch }}/lib/libvulkan.so
-          case '${{ matrix.arch }}' in
-            x86_64) file -L dist/custom-vulkan-sdk/linux-x86_64/lib/libvulkan.so | grep 'x86-64' ;;
-            aarch64) file -L dist/custom-vulkan-sdk/linux-aarch64/lib/libvulkan.so | grep 'ARM aarch64' ;;
-          esac
+          command -v cmake
+          command -v git
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+          cmake --version
 
-      - name: Package partial SDK
+      - name: Check Windows build dependencies
+        if: ${{ matrix.platform == 'windows' }}
         run: |
           set -eux
-          tar -C dist -czf ${{ matrix.artifact }}.tar.gz \
-            custom-vulkan-sdk/common \
-            custom-vulkan-sdk/linux-${{ matrix.arch }} \
-            custom-vulkan-sdk/setup-env.sh
+          cmake --version
+          git --version
 
-      - name: Upload partial SDK artifact
+      - name: Build SDK
+        run: scripts/build-sdk.sh ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Verify SDK
+        run: scripts/verify-sdk.sh dist/custom-vulkan-sdk ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Package SDK tarball
+        if: ${{ matrix.package_ext == 'tar.gz' }}
+        run: |
+          set -eux
+          tar -C dist -czf custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz \
+            custom-vulkan-sdk/${{ matrix.platform }}-${{ matrix.arch }} \
+            custom-vulkan-sdk/setup-env.sh \
+            custom-vulkan-sdk/setup-env.ps1
+
+      - name: Package SDK zip
+        if: ${{ matrix.package_ext == 'zip' }}
+        shell: pwsh
+        run: |
+          Push-Location dist
+          Compress-Archive -Force `
+            -Path 'custom-vulkan-sdk/${{ matrix.platform }}-${{ matrix.arch }}','custom-vulkan-sdk/setup-env.sh','custom-vulkan-sdk/setup-env.ps1' `
+            -DestinationPath '../custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}.zip'
+          Pop-Location
+
+      - name: Upload SDK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.tar.gz
-          if-no-files-found: error
-
-  package:
-    name: Package combined Linux SDK
-    runs-on: ubuntu-22.04
-    needs: build
-
-    env:
-      MAX_GLIBC_VERSION: '2.35'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install verification dependencies
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binutils file
-
-      - name: Download partial SDK artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: partials
-
-      - name: Merge SDK artifacts
-        run: |
-          set -eux
-          mkdir -p dist
-          find partials -name '*.tar.gz' -print -exec tar -C dist -xzf {} \;
-
-      - name: Verify architecture and glibc compatibility
-        run: scripts/check-compat.sh dist/custom-vulkan-sdk
-
-      - name: Package final SDK
-        run: |
-          set -eux
-          tar -C dist -czf custom-vulkan-sdk-linux-x86_64-aarch64.tar.gz custom-vulkan-sdk
-
-      - name: Upload final SDK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: custom-vulkan-sdk-linux-x86_64-aarch64
-          path: custom-vulkan-sdk-linux-x86_64-aarch64.tar.gz
+          name: custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}
+          path: custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.package_ext }}
           if-no-files-found: error

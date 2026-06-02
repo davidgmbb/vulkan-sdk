@@ -5,12 +5,7 @@ sdk_dir=${1:-dist/custom-vulkan-sdk}
 platform=${2:-}
 arch=${3:-}
 max_glibc=${MAX_GLIBC_VERSION:-}
-require_slang=${BUILD_SLANG:-ON}
-case "$require_slang" in
-  ON|On|on|TRUE|True|true|1|YES|Yes|yes) require_slang=ON ;;
-  OFF|Off|off|FALSE|False|false|0|NO|No|no) require_slang=OFF ;;
-  *) echo "BUILD_SLANG must be ON or OFF, got: $require_slang" >&2; exit 2 ;;
-esac
+build_slang=${BUILD_SLANG:-ON}
 
 usage() {
   echo "Usage: scripts/verify-sdk.sh [sdk-dir] <linux|windows|macos> <x86_64|aarch64>" >&2
@@ -30,6 +25,33 @@ case "$arch" in
   *) usage; exit 2 ;;
 esac
 
+normalize_bool() {
+  local name=$1
+  local value=$2
+  case "$value" in
+    ON|On|on|TRUE|True|true|1|YES|Yes|yes) echo ON ;;
+    OFF|Off|off|FALSE|False|false|0|NO|No|no) echo OFF ;;
+    *) echo "$name must be ON or OFF, got: $value" >&2; return 2 ;;
+  esac
+}
+build_slang=$(normalize_bool BUILD_SLANG "$build_slang")
+
+full_components="vulkan-headers,vulkan-loader,vulkan-utility-libraries,spirv-headers,spirv-tools,glslang,spirv-cross,shaderc,vulkan-tools,vulkan-validationlayers,vulkan-extensionlayer,vulkan-profiles,slang"
+minimal_components="vulkan-headers,vulkan-loader,slang"
+components=${COMPONENTS:-all}
+case "$components" in
+  all|ALL|All) components=$full_components ;;
+  minimal|MINIMAL|Minimal) components=$minimal_components ;;
+esac
+if [[ "$build_slang" == OFF ]]; then
+  components=$(printf '%s' "$components" | tr ',' '\n' | grep -vx 'slang' | paste -sd, - || true)
+fi
+
+has_component() {
+  local component=$1
+  printf ',%s,' "$components" | grep -q ",$component,"
+}
+
 prefix="$sdk_dir/$platform-$arch"
 if [[ ! -d "$prefix" ]]; then
   echo "SDK prefix does not exist: $prefix" >&2
@@ -40,6 +62,35 @@ require_file() {
   local path=$1
   if [[ ! -e "$path" ]]; then
     echo "Missing expected file: $path" >&2
+    exit 1
+  fi
+}
+
+require_any_file() {
+  local path
+  for path in "$@"; do
+    if [[ -e "$path" ]]; then
+      return 0
+    fi
+  done
+  echo "Missing expected file; tried: $*" >&2
+  exit 1
+}
+
+require_exe() {
+  local name=$1
+  if [[ "$platform" == windows ]]; then
+    require_file "$prefix/bin/$name.exe"
+  else
+    require_file "$prefix/bin/$name"
+  fi
+}
+
+require_match() {
+  local description=$1
+  shift
+  if ! find "$prefix" "$@" | grep -q .; then
+    echo "Missing expected $description" >&2
     exit 1
   fi
 }
@@ -77,39 +128,53 @@ check_file_type() {
   file -L "$path" | grep -Eq "$expected"
 }
 
-case "$platform" in
-  linux)
-    require_file "$prefix/lib/libvulkan.so"
-    case "$arch" in
-      x86_64) check_file_type "$prefix/lib/libvulkan.so" 'x86-64' ;;
-      aarch64) check_file_type "$prefix/lib/libvulkan.so" 'ARM aarch64' ;;
-    esac
-    while IFS= read -r -d '' elf; do
-      check_glibc_floor "$elf"
-    done < <(find "$prefix" -type f \( -name '*.so' -o -name '*.so.*' \) -print0)
-    ;;
-  macos)
-    require_file "$prefix/lib/libvulkan.dylib"
-    case "$arch" in
-      x86_64) check_file_type "$prefix/lib/libvulkan.dylib" 'x86_64' ;;
-      aarch64) check_file_type "$prefix/lib/libvulkan.dylib" 'arm64|aarch64' ;;
-    esac
-    ;;
-  windows)
-    require_file "$prefix/lib/vulkan-1.lib"
-    require_file "$prefix/bin/vulkan-1.dll"
-    ;;
-esac
+if has_component vulkan-loader; then
+  case "$platform" in
+    linux)
+      require_file "$prefix/lib/libvulkan.so"
+      case "$arch" in
+        x86_64) check_file_type "$prefix/lib/libvulkan.so" 'x86-64' ;;
+        aarch64) check_file_type "$prefix/lib/libvulkan.so" 'ARM aarch64' ;;
+      esac
+      while IFS= read -r -d '' elf; do
+        check_glibc_floor "$elf"
+      done < <(find "$prefix" -type f \( -name '*.so' -o -name '*.so.*' \) -print0)
+      ;;
+    macos)
+      require_file "$prefix/lib/libvulkan.dylib"
+      case "$arch" in
+        x86_64) check_file_type "$prefix/lib/libvulkan.dylib" 'x86_64' ;;
+        aarch64) check_file_type "$prefix/lib/libvulkan.dylib" 'arm64|aarch64' ;;
+      esac
+      ;;
+    windows)
+      require_any_file \
+        "$prefix/lib/vulkan-1.lib" \
+        "$prefix/lib/libvulkan-1.dll.a" \
+        "$prefix/lib/libvulkan.dll.a"
+      require_file "$prefix/bin/vulkan-1.dll"
+      ;;
+  esac
+fi
 
-if [[ "$require_slang" == ON ]]; then
-  if [[ -f "$prefix/bin/slangc" ]]; then
-    "$prefix/bin/slangc" -version || true
-  elif [[ -f "$prefix/bin/slangc.exe" ]]; then
+has_component vulkan-headers && require_file "$prefix/include/vulkan/vulkan.h"
+has_component spirv-tools && require_exe spirv-val
+has_component spirv-tools && require_exe spirv-opt
+has_component glslang && require_exe glslangValidator
+has_component spirv-cross && require_exe spirv-cross
+has_component shaderc && require_exe glslc
+has_component vulkan-tools && require_exe vulkaninfo
+has_component vulkan-validationlayers && require_match "Vulkan validation layer" -iname '*khronos_validation*'
+has_component vulkan-extensionlayer && require_match "Vulkan extension layer artifact" -iname '*VkLayer*'
+has_component vulkan-profiles && require_match "Vulkan profiles artifact" -iname '*profile*'
+has_component slang && require_exe slangc
+
+if has_component slang; then
+  if [[ "$platform" == windows ]]; then
     "$prefix/bin/slangc.exe" -version || true
   else
-    echo "Missing slangc. Set BUILD_SLANG=OFF only if this is intentional." >&2
-    exit 1
+    "$prefix/bin/slangc" -version || true
   fi
 fi
 
-echo "SDK verification passed for $platform-$arch."
+echo "SDK verification passed for $platform-$arch with components: $components"

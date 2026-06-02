@@ -5,12 +5,56 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      components:
+        description: 'Component set: all, minimal, or comma-separated component keys'
+        default: all
+        required: true
       vulkan_headers_ref:
         description: Git ref for KhronosGroup/Vulkan-Headers
         default: main
         required: true
       vulkan_loader_ref:
         description: Git ref for KhronosGroup/Vulkan-Loader
+        default: main
+        required: true
+      vulkan_utility_libraries_ref:
+        description: Git ref for KhronosGroup/Vulkan-Utility-Libraries
+        default: main
+        required: true
+      vulkan_tools_ref:
+        description: Git ref for KhronosGroup/Vulkan-Tools
+        default: main
+        required: true
+      vulkan_validation_layers_ref:
+        description: Git ref for KhronosGroup/Vulkan-ValidationLayers
+        default: main
+        required: true
+      vulkan_extension_layer_ref:
+        description: Git ref for KhronosGroup/Vulkan-ExtensionLayer
+        default: main
+        required: true
+      vulkan_profiles_ref:
+        description: Git ref for KhronosGroup/Vulkan-Profiles
+        default: main
+        required: true
+      spirv_headers_ref:
+        description: Git ref for KhronosGroup/SPIRV-Headers
+        default: main
+        required: true
+      spirv_tools_ref:
+        description: Git ref for KhronosGroup/SPIRV-Tools
+        default: main
+        required: true
+      glslang_ref:
+        description: Git ref for KhronosGroup/glslang
+        default: main
+        required: true
+      shaderc_ref:
+        description: Git ref for google/shaderc
+        default: main
+        required: true
+      spirv_cross_ref:
+        description: Git ref for KhronosGroup/SPIRV-Cross
         default: main
         required: true
       slang_ref:
@@ -32,6 +76,7 @@ jobs:
   build:
     name: ${{ matrix.platform }} ${{ matrix.arch }} SDK
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
 
     defaults:
       run:
@@ -61,25 +106,44 @@ jobs:
             arch: x86_64
             runner: windows-2022
             package_ext: zip
+            msys2_system: CLANG64
           - platform: windows
             arch: aarch64
             runner: windows-11-arm
             package_ext: zip
+            msys2_system: CLANGARM64
 
     env:
+      COMPONENTS: ${{ github.event.inputs.components || 'all' }}
       VULKAN_HEADERS_REF: ${{ github.event.inputs.vulkan_headers_ref || 'main' }}
       VULKAN_LOADER_REF: ${{ github.event.inputs.vulkan_loader_ref || 'main' }}
+      VULKAN_UTILITY_LIBRARIES_REF: ${{ github.event.inputs.vulkan_utility_libraries_ref || 'main' }}
+      VULKAN_TOOLS_REF: ${{ github.event.inputs.vulkan_tools_ref || 'main' }}
+      VULKAN_VALIDATION_LAYERS_REF: ${{ github.event.inputs.vulkan_validation_layers_ref || 'main' }}
+      VULKAN_EXTENSION_LAYER_REF: ${{ github.event.inputs.vulkan_extension_layer_ref || 'main' }}
+      VULKAN_PROFILES_REF: ${{ github.event.inputs.vulkan_profiles_ref || 'main' }}
+      SPIRV_HEADERS_REF: ${{ github.event.inputs.spirv_headers_ref || 'main' }}
+      SPIRV_TOOLS_REF: ${{ github.event.inputs.spirv_tools_ref || 'main' }}
+      GLSLANG_REF: ${{ github.event.inputs.glslang_ref || 'main' }}
+      SHADERC_REF: ${{ github.event.inputs.shaderc_ref || 'main' }}
+      SPIRV_CROSS_REF: ${{ github.event.inputs.spirv_cross_ref || 'main' }}
       SLANG_REF: ${{ github.event.inputs.slang_ref || 'master' }}
       BUILD_SLANG: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.build_slang == 'false') && 'OFF' || 'ON' }}
       ENABLE_WSI: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.enable_wsi == 'false') && 'OFF' || 'ON' }}
       SLANG_LLVM_FLAVOR: DISABLE
       SLANG_ENABLE_DXIL: OFF
+      PREFER_STATIC_LIBS: ON
       MAX_GLIBC_VERSION: '2.35'
       JOBS: 2
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
       - name: Install Linux build dependencies
         if: ${{ matrix.platform == 'linux' }}
@@ -93,14 +157,16 @@ jobs:
             cmake \
             file \
             git \
-            ninja-build \
-            pkg-config \
-            python3 \
             libwayland-dev \
             libx11-dev \
             libx11-xcb-dev \
+            libxext-dev \
+            libxkbcommon-dev \
             libxcb1-dev \
-            libxrandr-dev
+            libxrandr-dev \
+            ninja-build \
+            pkg-config \
+            python3
           cmake --version
 
       - name: Install macOS build dependencies
@@ -112,19 +178,60 @@ jobs:
           if ! command -v ninja >/dev/null 2>&1; then
             brew install ninja
           fi
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            brew install pkg-config
+          fi
           cmake --version
+
+      - name: Set up Windows Clang/MSYS2 build environment
+        if: ${{ matrix.platform == 'windows' }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msys2_system }}
+          update: true
+          install: >-
+            base-devel
+            git
+          pacboy: >-
+            clang:p
+            cmake:p
+            lld:p
+            ninja:p
+            python:p
+            pkgconf:p
 
       - name: Check Windows build dependencies
         if: ${{ matrix.platform == 'windows' }}
+        shell: msys2 {0}
         run: |
           set -eux
           cmake --version
           git --version
+          python --version
+          ninja --version
+          clang --version
+          clang++ --version
+          clang -dumpmachine
+          clang++ -dumpmachine
+          llvm-rc --version
+          ld.lld --version
 
       - name: Build SDK
+        if: ${{ matrix.platform != 'windows' }}
+        run: scripts/build-sdk.sh ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Build SDK
+        if: ${{ matrix.platform == 'windows' }}
+        shell: msys2 {0}
         run: scripts/build-sdk.sh ${{ matrix.platform }} ${{ matrix.arch }}
 
       - name: Verify SDK
+        if: ${{ matrix.platform != 'windows' }}
+        run: scripts/verify-sdk.sh dist/custom-vulkan-sdk ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Verify SDK
+        if: ${{ matrix.platform == 'windows' }}
+        shell: msys2 {0}
         run: scripts/verify-sdk.sh dist/custom-vulkan-sdk ${{ matrix.platform }} ${{ matrix.arch }}
 
       - name: Package SDK tarball

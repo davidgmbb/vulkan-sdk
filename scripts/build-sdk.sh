@@ -32,6 +32,7 @@ Environment variables:
   PREFER_STATIC_LIBS     ON/OFF to prefer static component libraries where practical (default: ON)
   WINDOWS_CMAKE_C_COMPILER   Direct Clang C compiler for Windows builds (default: clang)
   WINDOWS_CMAKE_CXX_COMPILER Direct Clang C++ compiler for Windows builds (default: clang++)
+  WINDOWS_CLANG_TARGET   MSVC ABI Clang target for Windows builds (default: inferred from arch)
   WORK_DIR               Build/source directory (default: .build)
   DIST_DIR               Output directory (default: dist)
   JOBS                   Parallel build jobs (default: nproc/sysctl/2)
@@ -109,6 +110,13 @@ enable_wsi=${ENABLE_WSI:-ON}
 prefer_static_libs=${PREFER_STATIC_LIBS:-ON}
 windows_c_compiler=${WINDOWS_CMAKE_C_COMPILER:-clang}
 windows_cxx_compiler=${WINDOWS_CMAKE_CXX_COMPILER:-clang++}
+windows_clang_target=${WINDOWS_CLANG_TARGET:-}
+if [[ -z "$windows_clang_target" ]]; then
+  case "$arch" in
+    x86_64) windows_clang_target=x86_64-pc-windows-msvc ;;
+    aarch64) windows_clang_target=aarch64-pc-windows-msvc ;;
+  esac
+fi
 
 host_arch=$(uname -m)
 case "$host_arch" in
@@ -342,22 +350,28 @@ cmake_configure() {
     args+=(-DBUILD_SHARED_LIBS=OFF)
   fi
   if [[ "$platform" == windows ]]; then
+    # Direct clang with an MSVC target predefines _WIN32, but not WIN32.  Some
+    # Vulkan SDK components still gate Windows-only code on WIN32.  Keep the
+    # normal Windows macros while also blocking Windows SDK min/max macros and
+    # CRT deprecation warnings from breaking GNU-like clang command-line builds.
+    local windows_c_flags="${CFLAGS:-}"
+    local windows_cxx_flags="${CXXFLAGS:-}"
+    local windows_compat_defines="-DWIN32 -D_WINDOWS -DNOMINMAX -DWIN32_LEAN_AND_MEAN -D_CRT_SECURE_NO_WARNINGS"
+    windows_c_flags="${windows_c_flags:+$windows_c_flags }$windows_compat_defines"
+    windows_cxx_flags="${windows_cxx_flags:+$windows_cxx_flags }$windows_compat_defines"
     args+=(
       -DCMAKE_C_COMPILER="$windows_c_compiler"
       -DCMAKE_CXX_COMPILER="$windows_cxx_compiler"
+      -DCMAKE_C_COMPILER_TARGET="$windows_clang_target"
+      -DCMAKE_CXX_COMPILER_TARGET="$windows_clang_target"
+      -DCMAKE_C_FLAGS="$windows_c_flags"
+      -DCMAKE_CXX_FLAGS="$windows_cxx_flags"
     )
     if command -v llvm-rc >/dev/null 2>&1; then
       args+=(-DCMAKE_RC_COMPILER="$(command -v llvm-rc)")
     fi
     if command -v llvm-mt >/dev/null 2>&1; then
       args+=(-DCMAKE_MT="$(command -v llvm-mt)")
-    fi
-    if command -v lld-link >/dev/null 2>&1 || command -v ld.lld >/dev/null 2>&1; then
-      args+=(
-        -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
-        -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
-        -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
-      )
     fi
   fi
 
@@ -382,19 +396,19 @@ require_direct_clang() {
   fi
 }
 
-require_windows_gnu_clang() {
+require_windows_msvc_clang() {
   local compiler=$1
   local label=$2
   local target
-  target=$("$compiler" -dumpmachine 2>/dev/null || "$compiler" --print-target-triple 2>/dev/null || true)
+  target=$("$compiler" --target="$windows_clang_target" -dumpmachine 2>/dev/null || "$compiler" --target="$windows_clang_target" --print-target-triple 2>/dev/null || true)
   case "$target" in
-    *windows-msvc*)
-      echo "$label targets MSVC ($target). Use a direct Clang/MinGW toolchain, not clang-cl or MSVC-targeting Clang." >&2
+    *windows-msvc*) ;;
+    *windows-gnu*|*w64-windows-gnu*)
+      echo "$label targets GNU/MinGW ($target). Use direct Clang with the MSVC ABI target, not the GNU Windows target." >&2
       exit 2
       ;;
-    *windows-gnu*|*w64-windows-gnu*) ;;
     *)
-      echo "$label must target Windows GNU/MinGW for this Windows build, got: ${target:-unknown}" >&2
+      echo "$label must target the Windows MSVC ABI for this Windows build, got: ${target:-unknown}" >&2
       exit 2
       ;;
   esac
@@ -430,17 +444,13 @@ check_native_platform() {
     esac
     require_direct_clang "$windows_c_compiler" WINDOWS_CMAKE_C_COMPILER
     require_direct_clang "$windows_cxx_compiler" WINDOWS_CMAKE_CXX_COMPILER
-    require_windows_gnu_clang "$windows_c_compiler" WINDOWS_CMAKE_C_COMPILER
-    require_windows_gnu_clang "$windows_cxx_compiler" WINDOWS_CMAKE_CXX_COMPILER
+    require_windows_msvc_clang "$windows_c_compiler" WINDOWS_CMAKE_C_COMPILER
+    require_windows_msvc_clang "$windows_cxx_compiler" WINDOWS_CMAKE_CXX_COMPILER
     if ! command -v llvm-rc >/dev/null 2>&1; then
       echo "llvm-rc is required for Windows resource compilation when building with direct clang." >&2
       exit 2
     fi
-    if ! command -v lld-link >/dev/null 2>&1 && ! command -v ld.lld >/dev/null 2>&1; then
-      echo "LLD is required for Windows builds with direct clang so the build does not depend on link.exe." >&2
-      exit 2
-    fi
-    echo "==> Native Windows build requested for $arch using $windows_c_compiler/$windows_cxx_compiler"
+    echo "==> Native Windows build requested for $arch using $windows_c_compiler/$windows_cxx_compiler --target=$windows_clang_target"
   fi
 }
 
@@ -527,12 +537,22 @@ build_spirv_cross() {
 }
 
 build_shaderc() {
-  # shaderc expects its third_party tree to be populated. This duplicates some
-  # already-built dependencies, but is the most reliable upstream-supported path.
-  (cd "$src_dir/shaderc" && (python3 utils/git-sync-deps || python utils/git-sync-deps))
-  cmake_install shaderc "$src_dir/shaderc" "$build_dir/shaderc-$platform-$arch" \
+  local shaderc_source="$src_dir/shaderc"
+
+  # The Vulkan SDK-pinned shaderc checkout is a small dependency-sync wrapper:
+  # update_shaderc_sources.py creates the actual shaderc CMake source tree in
+  # ./src, matching LunarG's SDK config for shaderc.
+  if [[ -f "$shaderc_source/update_shaderc_sources.py" ]]; then
+    (cd "$shaderc_source" && (python3 update_shaderc_sources.py || python update_shaderc_sources.py))
+    shaderc_source="$shaderc_source/src"
+  elif [[ -f "$shaderc_source/utils/git-sync-deps" ]]; then
+    (cd "$shaderc_source" && (python3 utils/git-sync-deps || python utils/git-sync-deps))
+  fi
+
+  cmake_install shaderc "$shaderc_source" "$build_dir/shaderc-$platform-$arch" \
     -DSHADERC_SKIP_TESTS=ON \
-    -DSHADERC_SKIP_EXAMPLES=ON
+    -DSHADERC_SKIP_EXAMPLES=ON \
+    -DSHADERC_ENABLE_WERROR_COMPILE=OFF
 }
 
 build_vulkan_tools() {

@@ -97,12 +97,14 @@ jobs:
             arch: x86_64
             runner: windows-2022
             package_ext: zip
-            msys2_system: CLANG64
+            msvc_arch: x64
+            windows_clang_target: x86_64-pc-windows-msvc
           - platform: windows
             arch: aarch64
             runner: windows-11-arm
             package_ext: zip
-            msys2_system: CLANGARM64
+            msvc_arch: arm64
+            windows_clang_target: aarch64-pc-windows-msvc
 
     env:
       COMPONENTS: ${{ github.event.inputs.components || 'all' }}
@@ -125,6 +127,7 @@ jobs:
       SLANG_LLVM_FLAVOR: DISABLE
       SLANG_ENABLE_DXIL: OFF
       PREFER_STATIC_LIBS: ON
+      WINDOWS_CLANG_TARGET: ${{ matrix.windows_clang_target || '' }}
       MAX_GLIBC_VERSION: '2.35'
       JOBS: 2
 
@@ -150,6 +153,7 @@ jobs:
             file \
             git \
             libwayland-dev \
+            wayland-protocols \
             libx11-dev \
             libx11-xcb-dev \
             libxext-dev \
@@ -175,26 +179,28 @@ jobs:
           fi
           cmake --version
 
-      - name: Set up Windows Clang/MSYS2 build environment
+      - name: Check Windows LLVM/Ninja build dependencies
         if: ${{ matrix.platform == 'windows' }}
-        uses: msys2/setup-msys2@v2
+        run: |
+          set -eux
+          export PATH="/c/Program Files/LLVM/bin:/c/ProgramData/chocolatey/bin:$PATH"
+          command -v clang
+          command -v clang++
+          command -v llvm-rc
+          if ! command -v ninja >/dev/null 2>&1; then
+            choco install ninja -y --no-progress
+          fi
+          [[ ! -d '/c/Program Files/LLVM/bin' ]] || echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          [[ ! -d '/c/ProgramData/chocolatey/bin' ]] || echo 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+
+      - name: Set up MSVC ABI environment
+        if: ${{ matrix.platform == 'windows' }}
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: ${{ matrix.msys2_system }}
-          update: true
-          install: >-
-            base-devel
-            git
-          pacboy: >-
-            clang:p
-            cmake:p
-            lld:p
-            ninja:p
-            python:p
-            pkgconf:p
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Check Windows build dependencies
         if: ${{ matrix.platform == 'windows' }}
-        shell: msys2 {0}
         run: |
           set -eux
           cmake --version
@@ -203,27 +209,14 @@ jobs:
           ninja --version
           clang --version
           clang++ --version
-          clang -dumpmachine
-          clang++ -dumpmachine
+          clang --target=${{ matrix.windows_clang_target }} -dumpmachine
+          clang++ --target=${{ matrix.windows_clang_target }} -dumpmachine
           command -v llvm-rc
-          ld.lld --version
 
       - name: Build SDK
-        if: ${{ matrix.platform != 'windows' }}
-        run: scripts/build-sdk.sh ${{ matrix.platform }} ${{ matrix.arch }}
-
-      - name: Build SDK
-        if: ${{ matrix.platform == 'windows' }}
-        shell: msys2 {0}
         run: scripts/build-sdk.sh ${{ matrix.platform }} ${{ matrix.arch }}
 
       - name: Verify SDK
-        if: ${{ matrix.platform != 'windows' }}
-        run: scripts/verify-sdk.sh dist/custom-vulkan-sdk ${{ matrix.platform }} ${{ matrix.arch }}
-
-      - name: Verify SDK
-        if: ${{ matrix.platform == 'windows' }}
-        shell: msys2 {0}
         run: scripts/verify-sdk.sh dist/custom-vulkan-sdk ${{ matrix.platform }} ${{ matrix.arch }}
 
       - name: Package SDK tarball

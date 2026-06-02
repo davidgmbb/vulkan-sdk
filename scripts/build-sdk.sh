@@ -555,6 +555,103 @@ build_shaderc() {
     -DSHADERC_ENABLE_WERROR_COMPILE=OFF
 }
 
+patch_extension_layer_for_windows_clang() {
+  if [[ "$platform" != windows ]]; then
+    return 0
+  fi
+
+  local cmake_file="$src_dir/Vulkan-ExtensionLayer/layers/CMakeLists.txt"
+  python3 - "$cmake_file" <<'PY'
+from pathlib import Path
+import sys
+
+cmake_file = Path(sys.argv[1])
+text = cmake_file.read_text()
+old = """    if(MSVC)
+        target_link_options(${extension_layer} PRIVATE /DEF:${CMAKE_CURRENT_SOURCE_DIR}/${extension_layer}.def)
+        target_compile_definitions(${extension_layer} PUBLIC NOMINMAX)
+    elseif(MINGW)
+        target_sources(${extension_layer} PRIVATE ${extension_layer}.def)
+    elseif(APPLE)
+"""
+new = """    if(MSVC)
+        target_link_options(${extension_layer} PRIVATE /DEF:${CMAKE_CURRENT_SOURCE_DIR}/${extension_layer}.def)
+        target_compile_definitions(${extension_layer} PUBLIC NOMINMAX)
+    elseif(MINGW)
+        target_sources(${extension_layer} PRIVATE ${extension_layer}.def)
+    elseif(WIN32)
+        target_link_options(${extension_layer} PRIVATE LINKER:/DEF:${CMAKE_CURRENT_SOURCE_DIR}/${extension_layer}.def)
+        target_compile_definitions(${extension_layer} PUBLIC NOMINMAX)
+    elseif(APPLE)
+"""
+if new in text:
+    sys.exit(0)
+if old not in text:
+    raise SystemExit(f"Could not patch Windows direct-Clang link options in {cmake_file}")
+cmake_file.write_text(text.replace(old, new, 1))
+PY
+}
+
+patch_validation_layers_for_windows_clang() {
+  if [[ "$platform" != windows ]]; then
+    return 0
+  fi
+
+  if [[ "$arch" == aarch64 ]]; then
+    # ValidationLayers' Windows dependency updater builds mimalloc by default.
+    # mimalloc 3.3.2 currently fails with direct Clang/MSVC-ABI ARM64 builds due
+    # to undeclared MSVC ARM64 acquire/release intrinsics (__ldar64/__stlr64).
+    # mimalloc is an optional performance allocator for VVL, so skip it only for
+    # Windows ARM64 and let VVL fall back to the CRT allocator.
+    local known_good="$src_dir/Vulkan-ValidationLayers/scripts/known_good.json"
+    python3 - "$known_good" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+known_good = Path(sys.argv[1])
+data = json.loads(known_good.read_text())
+for repo in data.get("repos", []):
+    if repo.get("name") == "mimalloc":
+        repo["build_architectures"] = ["64", "x64", "win64"]
+        break
+else:
+    raise SystemExit(f"Could not find mimalloc entry in {known_good}")
+known_good.write_text(json.dumps(data, indent=4) + "\n")
+PY
+  fi
+}
+
+patch_vulkan_profiles_for_windows_clang() {
+  if [[ "$platform" != windows ]]; then
+    return 0
+  fi
+
+  local cmake_file="$src_dir/Vulkan-Profiles/layer/CMakeLists.txt"
+  python3 - "$cmake_file" <<'PY'
+from pathlib import Path
+import sys
+
+cmake_file = Path(sys.argv[1])
+text = cmake_file.read_text()
+old = """elseif(MINGW)
+    target_sources(ProfilesLayer PRIVATE ${LAYER_NAME}.def)
+elseif(APPLE)
+"""
+new = """elseif(MINGW)
+    target_sources(ProfilesLayer PRIVATE ${LAYER_NAME}.def)
+elseif(WIN32)
+    message(DEBUG "Functions are exported via ${LAYER_NAME}.def")
+elseif(APPLE)
+"""
+if new in text:
+    sys.exit(0)
+if old not in text:
+    raise SystemExit(f"Could not patch Windows direct-Clang link options in {cmake_file}")
+cmake_file.write_text(text.replace(old, new, 1))
+PY
+}
+
 build_vulkan_tools() {
   cmake_install Vulkan-Tools "$src_dir/Vulkan-Tools" "$build_dir/vulkan-tools-$platform-$arch" \
     -DUPDATE_DEPS=ON \
@@ -565,17 +662,30 @@ build_vulkan_tools() {
 }
 
 build_validation_layers() {
-  cmake_install Vulkan-ValidationLayers "$src_dir/Vulkan-ValidationLayers" "$build_dir/validation-$platform-$arch" \
-    -DUPDATE_DEPS=ON \
-    -DBUILD_TESTS=OFF \
-    -DVULKAN_HEADERS_INSTALL_DIR="$common_prefix" \
-    -DVULKAN_UTILITY_LIBRARIES_INSTALL_DIR="$arch_prefix" \
-    -DSPIRV_HEADERS_INSTALL_DIR="$arch_prefix" \
-    -DSPIRV_TOOLS_INSTALL_DIR="$arch_prefix" \
+  patch_validation_layers_for_windows_clang
+
+  local extra=(
+    -DUPDATE_DEPS=ON
+    -DBUILD_TESTS=OFF
+    -DVULKAN_HEADERS_INSTALL_DIR="$common_prefix"
+    -DVULKAN_UTILITY_LIBRARIES_INSTALL_DIR="$arch_prefix"
+    -DSPIRV_HEADERS_INSTALL_DIR="$arch_prefix"
+    -DSPIRV_TOOLS_INSTALL_DIR="$arch_prefix"
     -DGLSLANG_INSTALL_DIR="$arch_prefix"
+  )
+  if [[ "$platform" == windows && "$arch" == aarch64 ]]; then
+    extra+=(-DUSE_MIMALLOC=OFF)
+  fi
+
+  cmake_install Vulkan-ValidationLayers "$src_dir/Vulkan-ValidationLayers" "$build_dir/validation-$platform-$arch" "${extra[@]}"
 }
 
 build_extension_layer() {
+  # Vulkan-ExtensionLayer 1.4.350 treats GNU-style clang as non-MSVC even when
+  # targeting the Windows MSVC ABI, which otherwise feeds ELF options such as
+  # --version-script and -Bsymbolic to lld-link/link.exe.
+  patch_extension_layer_for_windows_clang
+
   cmake_install Vulkan-ExtensionLayer "$src_dir/Vulkan-ExtensionLayer" "$build_dir/extension-layer-$platform-$arch" \
     -DUPDATE_DEPS=ON \
     -DBUILD_TESTS=OFF \
@@ -584,6 +694,11 @@ build_extension_layer() {
 }
 
 build_vulkan_profiles() {
+  # Vulkan-Profiles 1.4.350 also keys Windows linker handling off MSVC.  With
+  # direct clang targeting the MSVC ABI, WIN32 is true but MSVC is false, so
+  # avoid the Unix/ELF version-script/-Bsymbolic fallback on Windows.
+  patch_vulkan_profiles_for_windows_clang
+
   cmake_install Vulkan-Profiles "$src_dir/Vulkan-Profiles" "$build_dir/profiles-$platform-$arch" \
     -DUPDATE_DEPS=ON \
     -DBUILD_TESTS=OFF \

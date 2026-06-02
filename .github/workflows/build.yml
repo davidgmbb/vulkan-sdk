@@ -9,58 +9,49 @@ on:
         description: 'Component set: all, minimal, or comma-separated component keys'
         default: all
         required: true
+      current_vulkan_sdk_tag:
+        description: Common Vulkan SDK tag used for SDK-aligned upstreams
+        default: vulkan-sdk-1.4.350.0
+        required: true
       vulkan_headers_ref:
-        description: Git ref for KhronosGroup/Vulkan-Headers
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-Headers
+        required: false
       vulkan_loader_ref:
-        description: Git ref for KhronosGroup/Vulkan-Loader
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-Loader
+        required: false
       vulkan_utility_libraries_ref:
-        description: Git ref for KhronosGroup/Vulkan-Utility-Libraries
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-Utility-Libraries
+        required: false
       vulkan_tools_ref:
-        description: Git ref for KhronosGroup/Vulkan-Tools
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-Tools
+        required: false
       vulkan_validation_layers_ref:
-        description: Git ref for KhronosGroup/Vulkan-ValidationLayers
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-ValidationLayers
+        required: false
       vulkan_extension_layer_ref:
-        description: Git ref for KhronosGroup/Vulkan-ExtensionLayer
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-ExtensionLayer
+        required: false
       vulkan_profiles_ref:
-        description: Git ref for KhronosGroup/Vulkan-Profiles
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/Vulkan-Profiles
+        required: false
       spirv_headers_ref:
-        description: Git ref for KhronosGroup/SPIRV-Headers
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/SPIRV-Headers
+        required: false
       spirv_tools_ref:
-        description: Git ref for KhronosGroup/SPIRV-Tools
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/SPIRV-Tools
+        required: false
       glslang_ref:
-        description: Git ref for KhronosGroup/glslang
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/glslang
+        required: false
       shaderc_ref:
-        description: Git ref for google/shaderc
-        default: main
-        required: true
+        description: Optional override for google/shaderc; default is SDK config commit
+        required: false
       spirv_cross_ref:
-        description: Git ref for KhronosGroup/SPIRV-Cross
-        default: main
-        required: true
+        description: Optional override for KhronosGroup/SPIRV-Cross
+        required: false
       slang_ref:
-        description: Git ref for shader-slang/slang
-        default: master
-        required: true
+        description: Optional override for shader-slang/slang
+        required: false
       build_slang:
         description: Include slangc and Slang libraries
         type: boolean
@@ -115,19 +106,20 @@ jobs:
 
     env:
       COMPONENTS: ${{ github.event.inputs.components || 'all' }}
-      VULKAN_HEADERS_REF: ${{ github.event.inputs.vulkan_headers_ref || 'main' }}
-      VULKAN_LOADER_REF: ${{ github.event.inputs.vulkan_loader_ref || 'main' }}
-      VULKAN_UTILITY_LIBRARIES_REF: ${{ github.event.inputs.vulkan_utility_libraries_ref || 'main' }}
-      VULKAN_TOOLS_REF: ${{ github.event.inputs.vulkan_tools_ref || 'main' }}
-      VULKAN_VALIDATION_LAYERS_REF: ${{ github.event.inputs.vulkan_validation_layers_ref || 'main' }}
-      VULKAN_EXTENSION_LAYER_REF: ${{ github.event.inputs.vulkan_extension_layer_ref || 'main' }}
-      VULKAN_PROFILES_REF: ${{ github.event.inputs.vulkan_profiles_ref || 'main' }}
-      SPIRV_HEADERS_REF: ${{ github.event.inputs.spirv_headers_ref || 'main' }}
-      SPIRV_TOOLS_REF: ${{ github.event.inputs.spirv_tools_ref || 'main' }}
-      GLSLANG_REF: ${{ github.event.inputs.glslang_ref || 'main' }}
-      SHADERC_REF: ${{ github.event.inputs.shaderc_ref || 'main' }}
-      SPIRV_CROSS_REF: ${{ github.event.inputs.spirv_cross_ref || 'main' }}
-      SLANG_REF: ${{ github.event.inputs.slang_ref || 'master' }}
+      VULKAN_SDK_REF: ${{ github.event.inputs.current_vulkan_sdk_tag || '' }}
+      VULKAN_HEADERS_REF: ${{ github.event.inputs.vulkan_headers_ref || '' }}
+      VULKAN_LOADER_REF: ${{ github.event.inputs.vulkan_loader_ref || '' }}
+      VULKAN_UTILITY_LIBRARIES_REF: ${{ github.event.inputs.vulkan_utility_libraries_ref || '' }}
+      VULKAN_TOOLS_REF: ${{ github.event.inputs.vulkan_tools_ref || '' }}
+      VULKAN_VALIDATION_LAYERS_REF: ${{ github.event.inputs.vulkan_validation_layers_ref || '' }}
+      VULKAN_EXTENSION_LAYER_REF: ${{ github.event.inputs.vulkan_extension_layer_ref || '' }}
+      VULKAN_PROFILES_REF: ${{ github.event.inputs.vulkan_profiles_ref || '' }}
+      SPIRV_HEADERS_REF: ${{ github.event.inputs.spirv_headers_ref || '' }}
+      SPIRV_TOOLS_REF: ${{ github.event.inputs.spirv_tools_ref || '' }}
+      GLSLANG_REF: ${{ github.event.inputs.glslang_ref || '' }}
+      SHADERC_REF: ${{ github.event.inputs.shaderc_ref || '' }}
+      SPIRV_CROSS_REF: ${{ github.event.inputs.spirv_cross_ref || '' }}
+      SLANG_REF: ${{ github.event.inputs.slang_ref || '' }}
       BUILD_SLANG: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.build_slang == 'false') && 'OFF' || 'ON' }}
       ENABLE_WSI: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.enable_wsi == 'false') && 'OFF' || 'ON' }}
       SLANG_LLVM_FLAVOR: DISABLE
@@ -213,7 +205,7 @@ jobs:
           clang++ --version
           clang -dumpmachine
           clang++ -dumpmachine
-          llvm-rc --version
+          command -v llvm-rc
           ld.lld --version
 
       - name: Build SDK

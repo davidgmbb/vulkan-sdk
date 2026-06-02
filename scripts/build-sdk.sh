@@ -11,19 +11,20 @@ By default this builds the full component set.
 
 Environment variables:
   COMPONENTS             Comma list, "minimal", or "all" (default: all)
-  VULKAN_HEADERS_REF     Git ref for KhronosGroup/Vulkan-Headers (default: main)
-  VULKAN_LOADER_REF      Git ref for KhronosGroup/Vulkan-Loader (default: main)
-  VULKAN_UTILITY_LIBRARIES_REF Git ref for KhronosGroup/Vulkan-Utility-Libraries (default: main)
-  VULKAN_TOOLS_REF       Git ref for KhronosGroup/Vulkan-Tools (default: main)
-  VULKAN_VALIDATION_LAYERS_REF Git ref for KhronosGroup/Vulkan-ValidationLayers (default: main)
-  VULKAN_EXTENSION_LAYER_REF Git ref for KhronosGroup/Vulkan-ExtensionLayer (default: main)
-  VULKAN_PROFILES_REF    Git ref for KhronosGroup/Vulkan-Profiles (default: main)
-  SPIRV_HEADERS_REF      Git ref for KhronosGroup/SPIRV-Headers (default: main)
-  SPIRV_TOOLS_REF        Git ref for KhronosGroup/SPIRV-Tools (default: main)
-  GLSLANG_REF            Git ref for KhronosGroup/glslang (default: main)
-  SHADERC_REF            Git ref for google/shaderc (default: main)
-  SPIRV_CROSS_REF        Git ref for KhronosGroup/SPIRV-Cross (default: main)
-  SLANG_REF              Git ref for shader-slang/slang (default: master)
+  VULKAN_SDK_REF         Common SDK tag for SDK-aligned upstreams (default: current_vulkan_sdk_tag)
+  VULKAN_HEADERS_REF     Optional override for KhronosGroup/Vulkan-Headers
+  VULKAN_LOADER_REF      Optional override for KhronosGroup/Vulkan-Loader
+  VULKAN_UTILITY_LIBRARIES_REF Optional override for KhronosGroup/Vulkan-Utility-Libraries
+  VULKAN_TOOLS_REF       Optional override for KhronosGroup/Vulkan-Tools
+  VULKAN_VALIDATION_LAYERS_REF Optional override for KhronosGroup/Vulkan-ValidationLayers
+  VULKAN_EXTENSION_LAYER_REF Optional override for KhronosGroup/Vulkan-ExtensionLayer
+  VULKAN_PROFILES_REF    Optional override for KhronosGroup/Vulkan-Profiles
+  SPIRV_HEADERS_REF      Optional override for KhronosGroup/SPIRV-Headers
+  SPIRV_TOOLS_REF        Optional override for KhronosGroup/SPIRV-Tools
+  GLSLANG_REF            Optional override for KhronosGroup/glslang
+  SHADERC_REF            Optional override for google/shaderc (default: current SDK config commit)
+  SPIRV_CROSS_REF        Optional override for KhronosGroup/SPIRV-Cross
+  SLANG_REF              Optional override for shader-slang/slang
   BUILD_SLANG            ON/OFF compatibility switch (default: ON)
   SLANG_LLVM_FLAVOR      Slang LLVM mode; DISABLE avoids extra binary downloads (default: DISABLE)
   SLANG_ENABLE_DXIL      ON/OFF for Slang DXIL support (default: OFF)
@@ -84,19 +85,23 @@ else
 fi
 jobs=${JOBS:-$default_jobs}
 
-headers_ref=${VULKAN_HEADERS_REF:-main}
-loader_ref=${VULKAN_LOADER_REF:-main}
-utility_ref=${VULKAN_UTILITY_LIBRARIES_REF:-main}
-tools_ref=${VULKAN_TOOLS_REF:-main}
-validation_ref=${VULKAN_VALIDATION_LAYERS_REF:-main}
-extension_ref=${VULKAN_EXTENSION_LAYER_REF:-main}
-profiles_ref=${VULKAN_PROFILES_REF:-main}
-spirv_headers_ref=${SPIRV_HEADERS_REF:-main}
-spirv_tools_ref=${SPIRV_TOOLS_REF:-main}
-glslang_ref=${GLSLANG_REF:-main}
-shaderc_ref=${SHADERC_REF:-main}
-spirv_cross_ref=${SPIRV_CROSS_REF:-main}
-slang_ref=${SLANG_REF:-master}
+current_vulkan_sdk_tag=vulkan-sdk-1.4.350.0
+current_shaderc_commit=2a6a038115f801b142b94b53382a932acdb0edfc
+
+default_vulkan_sdk_ref=${VULKAN_SDK_REF:-$current_vulkan_sdk_tag}
+headers_ref=${VULKAN_HEADERS_REF:-$default_vulkan_sdk_ref}
+loader_ref=${VULKAN_LOADER_REF:-$default_vulkan_sdk_ref}
+utility_ref=${VULKAN_UTILITY_LIBRARIES_REF:-$default_vulkan_sdk_ref}
+tools_ref=${VULKAN_TOOLS_REF:-$default_vulkan_sdk_ref}
+validation_ref=${VULKAN_VALIDATION_LAYERS_REF:-$default_vulkan_sdk_ref}
+extension_ref=${VULKAN_EXTENSION_LAYER_REF:-$default_vulkan_sdk_ref}
+profiles_ref=${VULKAN_PROFILES_REF:-$default_vulkan_sdk_ref}
+spirv_headers_ref=${SPIRV_HEADERS_REF:-$default_vulkan_sdk_ref}
+spirv_tools_ref=${SPIRV_TOOLS_REF:-$default_vulkan_sdk_ref}
+glslang_ref=${GLSLANG_REF:-$default_vulkan_sdk_ref}
+shaderc_ref=${SHADERC_REF:-$current_shaderc_commit}
+spirv_cross_ref=${SPIRV_CROSS_REF:-$default_vulkan_sdk_ref}
+slang_ref=${SLANG_REF:-$default_vulkan_sdk_ref}
 build_slang=${BUILD_SLANG:-ON}
 slang_llvm_flavor=${SLANG_LLVM_FLAVOR:-DISABLE}
 slang_enable_dxil=${SLANG_ENABLE_DXIL:-OFF}

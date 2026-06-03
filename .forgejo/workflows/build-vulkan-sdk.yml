@@ -1,0 +1,302 @@
+name: build-vulkan-sdk
+
+# Expected self-hosted runner labels. Rename these in the matrix if your
+# Forgejo runners use different labels:
+#   forgejo-linux-x86_64, forgejo-linux-aarch64
+#   forgejo-macos-x86_64, forgejo-macos-aarch64
+#   forgejo-windows-x86_64, forgejo-windows-aarch64
+#
+# Windows runners must have Git Bash, CMake, Python, LLVM clang/clang++/llvm-rc,
+# Ninja, and Visual Studio Build Tools installed. The workflow imports the MSVC
+# developer environment locally; it does not use clang-cl, MinGW, or containers.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      components:
+        description: 'Component set: all, minimal, or comma-separated component keys'
+        default: all
+        required: false
+      current_vulkan_sdk_tag:
+        description: Common Vulkan SDK tag used for SDK-aligned upstreams
+        default: vulkan-sdk-1.4.350.0
+        required: false
+      vulkan_headers_ref:
+        description: Optional override for KhronosGroup/Vulkan-Headers
+        required: false
+      vulkan_loader_ref:
+        description: Optional override for KhronosGroup/Vulkan-Loader
+        required: false
+      vulkan_utility_libraries_ref:
+        description: Optional override for KhronosGroup/Vulkan-Utility-Libraries
+        required: false
+      vulkan_tools_ref:
+        description: Optional override for KhronosGroup/Vulkan-Tools
+        required: false
+      vulkan_validation_layers_ref:
+        description: Optional override for KhronosGroup/Vulkan-ValidationLayers
+        required: false
+      vulkan_extension_layer_ref:
+        description: Optional override for KhronosGroup/Vulkan-ExtensionLayer
+        required: false
+      vulkan_profiles_ref:
+        description: Optional override for KhronosGroup/Vulkan-Profiles
+        required: false
+      spirv_headers_ref:
+        description: Optional override for KhronosGroup/SPIRV-Headers
+        required: false
+      spirv_tools_ref:
+        description: Optional override for KhronosGroup/SPIRV-Tools
+        required: false
+      glslang_ref:
+        description: Optional override for KhronosGroup/glslang
+        required: false
+      shaderc_ref:
+        description: Optional override for google/shaderc; default is SDK config commit
+        required: false
+      spirv_cross_ref:
+        description: Optional override for KhronosGroup/SPIRV-Cross
+        required: false
+      slang_ref:
+        description: Optional override for shader-slang/slang
+        required: false
+      build_slang:
+        description: 'ON/OFF: include slangc and Slang libraries'
+        default: ON
+        required: false
+      enable_wsi:
+        description: 'ON/OFF: Linux WSI support for XCB, Xlib, Xrandr, and Wayland'
+        default: ON
+        required: false
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} ${{ matrix.arch }} SDK
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x86_64
+            runner: forgejo-linux-x86_64
+            package_ext: tar.gz
+          - platform: linux
+            arch: aarch64
+            runner: forgejo-linux-aarch64
+            package_ext: tar.gz
+          - platform: macos
+            arch: x86_64
+            runner: forgejo-macos-x86_64
+            package_ext: tar.gz
+          - platform: macos
+            arch: aarch64
+            runner: forgejo-macos-aarch64
+            package_ext: tar.gz
+          - platform: windows
+            arch: x86_64
+            runner: forgejo-windows-x86_64
+            package_ext: zip
+            msvc_arch: x64
+            windows_clang_target: x86_64-pc-windows-msvc
+          - platform: windows
+            arch: aarch64
+            runner: forgejo-windows-aarch64
+            package_ext: zip
+            msvc_arch: arm64
+            windows_clang_target: aarch64-pc-windows-msvc
+
+    env:
+      COMPONENTS: ${{ github.event.inputs.components || 'all' }}
+      VULKAN_SDK_REF: ${{ github.event.inputs.current_vulkan_sdk_tag || 'vulkan-sdk-1.4.350.0' }}
+      VULKAN_HEADERS_REF: ${{ github.event.inputs.vulkan_headers_ref || '' }}
+      VULKAN_LOADER_REF: ${{ github.event.inputs.vulkan_loader_ref || '' }}
+      VULKAN_UTILITY_LIBRARIES_REF: ${{ github.event.inputs.vulkan_utility_libraries_ref || '' }}
+      VULKAN_TOOLS_REF: ${{ github.event.inputs.vulkan_tools_ref || '' }}
+      VULKAN_VALIDATION_LAYERS_REF: ${{ github.event.inputs.vulkan_validation_layers_ref || '' }}
+      VULKAN_EXTENSION_LAYER_REF: ${{ github.event.inputs.vulkan_extension_layer_ref || '' }}
+      VULKAN_PROFILES_REF: ${{ github.event.inputs.vulkan_profiles_ref || '' }}
+      SPIRV_HEADERS_REF: ${{ github.event.inputs.spirv_headers_ref || '' }}
+      SPIRV_TOOLS_REF: ${{ github.event.inputs.spirv_tools_ref || '' }}
+      GLSLANG_REF: ${{ github.event.inputs.glslang_ref || '' }}
+      SHADERC_REF: ${{ github.event.inputs.shaderc_ref || '' }}
+      SPIRV_CROSS_REF: ${{ github.event.inputs.spirv_cross_ref || '' }}
+      SLANG_REF: ${{ github.event.inputs.slang_ref || '' }}
+      BUILD_SLANG: ${{ github.event.inputs.build_slang || 'ON' }}
+      ENABLE_WSI: ${{ github.event.inputs.enable_wsi || 'ON' }}
+      SLANG_LLVM_FLAVOR: DISABLE
+      SLANG_ENABLE_DXIL: OFF
+      PREFER_STATIC_LIBS: ON
+      WINDOWS_CLANG_TARGET: ${{ matrix.windows_clang_target || '' }}
+      MAX_GLIBC_VERSION: '2.35'
+      JOBS: 2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: ${{ matrix.platform == 'linux' }}
+        run: |
+          set -eux
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo_cmd=sudo
+            if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+              sudo_cmd=
+            fi
+            $sudo_cmd apt-get update
+            $sudo_cmd apt-get install -y --no-install-recommends \
+              binutils \
+              build-essential \
+              ca-certificates \
+              cmake \
+              file \
+              git \
+              libwayland-dev \
+              wayland-protocols \
+              libx11-dev \
+              libx11-xcb-dev \
+              libxext-dev \
+              libxkbcommon-dev \
+              libxcb1-dev \
+              libxrandr-dev \
+              ninja-build \
+              pkg-config \
+              python3
+          fi
+          cmake --version
+          git --version
+          python3 --version
+          ninja --version
+
+      - name: Install macOS build dependencies
+        if: ${{ matrix.platform == 'macos' }}
+        run: |
+          set -eux
+          command -v cmake
+          command -v git
+          command -v python3 || command -v python
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            brew install pkg-config
+          fi
+          cmake --version
+          ninja --version
+
+      - name: Check Windows LLVM/Ninja build dependencies
+        if: ${{ matrix.platform == 'windows' }}
+        run: |
+          set -eux
+          export PATH="/c/Program Files/LLVM/bin:/c/ProgramData/chocolatey/bin:$PATH"
+          command -v clang
+          command -v clang++
+          command -v llvm-rc
+          if ! command -v ninja >/dev/null 2>&1; then
+            if command -v choco >/dev/null 2>&1; then
+              choco install ninja -y --no-progress
+            else
+              echo "ninja is required on the Windows Forgejo runner" >&2
+              exit 2
+            fi
+          fi
+          [[ ! -d '/c/Program Files/LLVM/bin' ]] || echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          [[ ! -d '/c/ProgramData/chocolatey/bin' ]] || echo 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+
+      - name: Import MSVC ABI environment
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.msvc_arch }}'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installationPath = $null
+          if (Test-Path $vswhere) {
+            $installationPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          }
+          if (-not $installationPath) {
+            $candidates = @(
+              "$env:ProgramFiles\Microsoft Visual Studio\2022\Enterprise",
+              "$env:ProgramFiles\Microsoft Visual Studio\2022\Professional",
+              "$env:ProgramFiles\Microsoft Visual Studio\2022\Community",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools"
+            )
+            $installationPath = $candidates | Where-Object { Test-Path (Join-Path $_ 'Common7\Tools\VsDevCmd.bat') } | Select-Object -First 1
+          }
+          if (-not $installationPath) {
+            throw 'Could not locate Visual Studio or Build Tools with MSVC toolchain.'
+          }
+          $vsdev = Join-Path $installationPath 'Common7\Tools\VsDevCmd.bat'
+          if (!(Test-Path $vsdev)) {
+            throw "VsDevCmd.bat not found: $vsdev"
+          }
+
+          $envLines = cmd.exe /s /c "`"$vsdev`" -arch=$arch -host_arch=$arch >nul && set"
+          foreach ($line in $envLines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $matches[1]
+              $value = $matches[2]
+              if ($name -ieq 'Path') {
+                foreach ($entry in ($value -split ';')) {
+                  if ($entry) { $entry | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+                }
+              } elseif ($name -match '^(INCLUDE|LIB|LIBPATH|WindowsSdkDir|WindowsSDKVersion|VCToolsInstallDir|VCINSTALLDIR|VSINSTALLDIR|UniversalCRTSdkDir|UCRTVersion|VSCMD_ARG_TGT_ARCH|VSCMD_VER)$') {
+                "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              }
+            }
+          }
+
+      - name: Check Windows build dependencies
+        if: ${{ matrix.platform == 'windows' }}
+        run: |
+          set -eux
+          cmake --version
+          git --version
+          python --version
+          ninja --version
+          clang --version
+          clang++ --version
+          clang --target=${{ matrix.windows_clang_target }} -dumpmachine
+          clang++ --target=${{ matrix.windows_clang_target }} -dumpmachine
+          command -v llvm-rc
+
+      - name: Build SDK
+        run: scripts/build-sdk.sh ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Verify SDK
+        run: scripts/verify-sdk.sh dist/custom-vulkan-sdk ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Package SDK tarball
+        if: ${{ matrix.package_ext == 'tar.gz' }}
+        run: |
+          set -eux
+          tar -C dist -czf custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz \
+            custom-vulkan-sdk/${{ matrix.platform }}-${{ matrix.arch }} \
+            custom-vulkan-sdk/setup-env.sh \
+            custom-vulkan-sdk/setup-env.ps1
+
+      - name: Package SDK zip
+        if: ${{ matrix.package_ext == 'zip' }}
+        shell: pwsh
+        run: |
+          Push-Location dist
+          Compress-Archive -Force `
+            -Path 'custom-vulkan-sdk/${{ matrix.platform }}-${{ matrix.arch }}','custom-vulkan-sdk/setup-env.sh','custom-vulkan-sdk/setup-env.ps1' `
+            -DestinationPath '../custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}.zip'
+          Pop-Location
+
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}
+          path: custom-vulkan-sdk-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.package_ext }}
+          if-no-files-found: error
